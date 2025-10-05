@@ -1,0 +1,1394 @@
+---
+title: "km-bcg-ur-nmbc"
+author: "Steven Monda"
+date: "2025-10-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,eval=TRUE)
+```
+
+# Estimating Trial EFS for Recent BCG-Unresponsive Trials Using Swimmers Plot & Reconstructed KM Data
+
+```{r eval=T}
+library(survival)
+library(ggplot2)
+library(survminer)
+library(survival)
+library(readxl)
+library(readr)
+library(dplyr)
+library(reconstructKM)
+library(cowplot)
+```
+
+# Pembrolizumab: Keynote-057
+
+https://www.thelancet.com/journals/lanonc/article/PIIS1470-2045(21)00147-9/fulltext
+
+Balar, Lancet Oncology, 2021
+"Pembrolizumab monotherapy for the treatment of high-risk non-muscle-invasive 
+ bladder cancer unresponsive to BCG (KEYNOTE-057) an open-label, single-arm, multicentre, phase 2 study"
+
+### Data from Swimmer Plot
+Pull in the digitization of Figure 2b from plotdigitizer (https://plotdigitizer.com/): https://www.thelancet.com/journals/lanonc/article/PIIS1470-2045(21)00147-9/fulltext
+
+
+
+```{r}
+pembrocisswimcr <- read_excel("Pembro/CIS- swimmers-pembro digi.xlsx")
+```
+
+Recreate Figure 2a from publication, time to response, as sanity check: https://www.thelancet.com/journals/lanonc/article/PIIS1470-2045(21)00147-9/fulltext
+
+
+```{r}
+#recreates time since CR- CR and survival time can both be abstracted from swimmers plot
+pembrocisswimcr$timesincecr<-pembrocisswimcr$survtime - pembrocisswimcr$crtime
+
+
+ggsurvplot(
+  survfit(Surv(as.numeric(  timesincecr),   event == "1"
+               # &survival$ADTHCAUS=="DISEASE PROGRESSION"
+  ) ~ 1,                  
+  data = 
+    pembrocisswimcr
+  )
+  , # shaded step band
+  xlim = c(0, 42), conf.int = FALSE,
+  title = "KN-057 CIS+ Original Fig 2a Re-creation from Swimmer Plot Data",  break.time.by = 3,  ,risk.table = TRUE  # every 3 months
+  
+)
+```
+
+
+The digitized swimmers plot pulled in data from CR patients, non-CR patient data must be generated with assumption that an event occured at first cystoscopy
+
+```{r}
+#Since the swimmers plot only includes CR patients, we must create data for non-CR patients, 57 patients 
+#Although CONSORT diagram describes withdrawal of 3 patient from study, these were implied to have occurred after CR later in body of text
+#Because early censoring of non-CR patients could not be established- all patients were assumed to have experienced an event at the first cysto
+#Timing of first cysto. a 3 month evaluation,  came from a sample of the swimmers plots CR times (their cysto times, range 2.4-4.5 months) 
+
+set.seed(123)
+nocrcispembrosample <- data.frame(
+  crtime = sample(pembrocisswimcr$crtime, size = 57, replace = TRUE),
+  status = rep(1, 57)
+)
+
+colnames(nocrcispembrosample) <- c("survtime","event")
+
+cr<-data.frame(pembrocisswimcr$survtime,pembrocisswimcr$event)
+colnames(cr) <- c("survtime","event")
+# now rbind should work with similar colnames
+#combine complete responses with non-complete responses
+pembrocisswimcomb <- rbind(cr, nocrcispembrosample)
+
+```
+
+Next 12 and 24 mo survival estimates and KM Curves are generated for all trial patients
+
+```{r}
+## Fit KM
+sf_pembro <- survfit(Surv(as.numeric(survtime), event == "1") ~ 1,                       
+                     conf.type="log-log",error="greenwood",
+                     data = pembrocisswimcomb)
+
+## Landmark times
+landmark_times <- c(12, 24)
+s_landmarkspembro <- summary(sf_pembro, times = landmark_times, conf.int = TRUE)
+
+df_landmarkpembro <- data.frame(
+  time  = s_landmarkspembro$time,
+  surv  = s_landmarkspembro$surv,
+  lower = s_landmarkspembro$lower,
+  upper = s_landmarkspembro$upper
+)
+
+## Base plot
+pembrocisswimsurv <- ggsurvplot(
+  sf_pembro,
+  data = pembrocisswimcomb,
+  conf.int = TRUE,
+  
+  ylab="Event Free Survival",
+  palette = "black",
+  risk.table.title = "",
+  risk.table.y.text = FALSE,
+  xlab="Months",
+  xlim = c(0, 36),
+  break.time.by = 3,
+  risk.table = TRUE,
+  
+  title = "Keynote-057: Pembrolizumab",
+  # title = "Keynote-057: Pembrolizumab\nCIS+ Population",
+  legend = "none"
+)
+
+## Add vertical reference lines (every 3 mo)
+pembrocisswimsurv$plot <- pembrocisswimsurv$plot +
+  geom_vline(xintercept = seq(3, 57, by = 3), 
+             linewidth = 0.3, color = "gray40") +
+  geom_text(
+    data = data.frame(x = seq(0, 24, by = 3/(365/12/7)), y = 0.02),  # positions
+    aes(x = x, y = y, label = "*"),
+    inherit.aes = FALSE,
+    vjust = 1.5,       # push asterisk below x-axis tick
+    size = 7,          # adjust size
+    color = "black"
+  )
+
+## Add dashed crosshairs + CI error bars + labels for 12 & 24 mo
+pembrocisswimsurv$plot <- pembrocisswimsurv$plot +
+  geom_segment(data = df_landmarkpembro,
+               aes(x = time, y = 0, xend = time, yend = surv),
+               linetype = "dashed") +
+  # geom_segment(data = df_landmarkpembro,
+  #              aes(x = 0, y = surv, xend = time, yend = surv),
+  #              linetype = "dashed") +
+  geom_errorbar(data = df_landmarkpembro,
+                aes(x = time, ymin = lower, ymax = upper),
+                width = 0, color = "black") +
+  geom_text(data = df_landmarkpembro,
+            aes(x = time + 1,
+                y = surv + 0.07,
+                label = sprintf("%d-mo EFS: %.1f%% \n(95%% CI %.1f–%.1f)",
+                                time, 100*surv, 100*lower, 100*upper)),
+            hjust = 0)
+
+
+pembrocisswimsurv$plot <- pembrocisswimsurv$plot +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2),labels = scales::percent_format(accuracy = 1))
+
+pembrocisswimsurv$table <- pembrocisswimsurv$table +scale_x_continuous(position = "top",breaks = seq(0, 36, by = 3),labels = NULL) +  
+  labs(y = "At Risk",title = NULL,,x=NULL)  +
+  theme(plot.title = element_text(
+    size = 1))
+pembrocisswimsurv
+
+summary(sf_pembro, times = landmark_times, conf.int = TRUE)
+
+```
+
+## Data from Kaplan-Meier Reconstruction: Reconstruct KM
+
+Next KM curves were reconstructed from published KM curves
+For Pembrolizumab- a published KM curve was available for only CR patients starting at time of response so this needed to be adjusted for T0 = therapy start
+Data was abstracted from Figure 2a using plotdigitizer https://www.thelancet.com/journals/lanonc/article/PIIS1470-2045(21)00147-9/fulltext
+
+
+
+```{r}
+#First ReconstructKM-
+#https://cran.r-project.org/web/packages/reconstructKM/vignettes/introduction.html
+#KM curves were initially digitized using plotdigitizer 
+#https://plotdigitizer.com/
+
+
+
+
+pembrocis_surv<-read_excel("Pembro/CIS- KM-pembro digi.xlsx")
+#number at risk
+pembrocis_NAR <- data.frame(time=seq(from=0, to=39, by=3), NAR=c(
+  39,36,27,18,18,15,13,10,9,8,6,3,2,0
+))
+
+pembrocis_aug<-format_raw_tabs(raw_NAR=pembrocis_NAR,
+                               raw_surv=pembrocis_surv)
+
+pembrocis_aug$aug_surv <- pembrocis_aug$aug_surv %>%
+  dplyr::rename(surv = survival)
+
+pembrocis_recon <- KM_reconstruct(aug_NAR=pembrocis_aug$aug_NAR, aug_surv=pembrocis_aug$aug_surv)
+pembrocisreconsurv<-data.frame(pembrocis_recon$IPD_time,pembrocis_recon$IPD_event)
+
+#a reconstruction of Figure 2a for sanity check
+pembrocisreconcr<-ggsurvplot(
+  survfit(Surv(as.numeric(  pembrocis_recon.IPD_time),   pembrocis_recon.IPD_event == "1"
+  ) ~ 1,                       data = 
+    pembrocisreconsurv
+  ),conf.int = F,
+  xlim = c(0, 42), title = "KN-057 CIS+ Original Fig 2a Re-creation from ReconstructKM",
+  break.time.by = 3,risk.table = TRUE)
+pembrocisreconcr
+
+
+#a 3 month cysto period must be added to duration of response (which is really time since first cysto) to be consistent with time since therapy start
+#3 month cysto timing was taken as a sample of the swimmers plot CR times (range 2.4-4.5)
+set.seed(123)
+pembrocisreconsurv$survtime<-pembrocisreconsurv$pembrocis_recon.IPD_time+sample(pembrocisswimcr$crtime, size = 39, replace = TRUE)
+
+#Since the KM plot only includes CR patients, must create file for non-responders, 57 patients, same as for swimmers
+#First cysto timing came from a sample of the swimmers plots CR times (range 2.4-4.5)
+
+set.seed(123)
+nocrcispembrosample <- data.frame(
+  crtime = sample(pembrocisswimcr$crtime, size = 57, replace = TRUE),
+  status = rep(1, 57)
+)
+
+colnames(nocrcispembrosample) <- c("survtime","event")
+
+cr<-data.frame(pembrocisreconsurv$survtime,pembrocisreconsurv$pembrocis_recon.IPD_event)
+colnames(cr) <- c("survtime","event")
+# now rbind should work with similar colnames
+#combine complete responses with non-complete responses
+pembrocisreconsurvcom <- rbind(cr, nocrcispembrosample)
+
+```
+
+The following figure can be compared to the figure that was achieved above with swimmer plot
+
+```{r}
+
+pembrocisreconcomb<-ggsurvplot(
+  survfit(Surv(as.numeric(  survtime),  event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    pembrocisreconsurvcom
+  ),title="KN-057 CIS+ EFS from ReconstructKM",
+  xlim = c(0, 36))
+pembrocisreconcomb
+
+summary(  survfit(Surv(as.numeric(  survtime),  event == "1"
+) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+  pembrocisreconsurvcom
+),times = landmark_times, conf.int = TRUE)
+```
+
+## Data from Kaplan-Meier Reconstruction: IPDfromKM
+
+IPDfromKM was applied directly to Figure 2a using the MD Anderson hosted shinyapp
+https://biostatistics.mdanderson.org/shinyapps/IPDfromKM/
+
+
+```{r}
+#Second IPDfromKM https://biostatistics.mdanderson.org/shinyapps/IPDfromKM/
+#IPDfromKM
+
+
+pembrocisipdsurv <- read_csv("Pembro/CIS Pembro IPDfromKM Reconstruct.csv")
+
+#Again a reconstruction of Figure 2a for sanity check
+
+pembrociscripd<-ggsurvplot(
+  survfit(Surv(as.numeric(pembrocisipdsurv$`Survival time`), pembrocisipdsurv$Status == "1"
+ 
+  ) ~ 1,                       data = pembrocisipdsurv)
+  ,conf.int = F,title="KN-057 CIS+ Original Fig 2a Re-creation from IPDfromKM",
+  xlim = c(0, 42),   break.time.by = 3,  ,risk.table = TRUE  # every 3 months
+  
+)
+pembrociscripd
+
+
+#a 3 month cysto period must be added to duration of response (which is really time since first cysto) to be consistent with time since therapy start
+#3 month cysto timing was taken as a sample of the swimmers plot CR times (range 2.4-4.5)
+set.seed(123)
+#survival time pulled in is from CR/first-cysto, survtime created is from therapy start
+pembrocisipdsurv$survtime<-pembrocisipdsurv$`Survival time`+sample(pembrocisswimcr$crtime, size = 39, replace = TRUE)
+
+#Since the KM plot only includes CR patients, must create file for non-responders, 57 patients, same as for swimmers
+#First cysto timing came from a sample of the swimmers plots CR times (range 2.4-4.5)
+
+set.seed(123)
+nocrcispembrosample <- data.frame(
+  crtime = sample(pembrocisswimcr$crtime, size = 57, replace = TRUE),
+  status = rep(1, 57)
+)
+
+colnames(nocrcispembrosample) <- c("survtime","event")
+
+cr<-data.frame(pembrocisipdsurv$survtime,pembrocisipdsurv$Status)
+colnames(cr) <- c("survtime","event")
+# now rbind should work with similar colnames
+#combine complete responses with non-complete responses
+pembrocisipdsurvcom <- rbind(cr, nocrcispembrosample)
+
+pembrocisipdcomb<-ggsurvplot(
+  survfit(Surv(as.numeric(survtime),  event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    pembrocisipdsurvcom
+  ),title="KN-057 CIS+ EFS from IPDfromKM",
+  xlim = c(0, 36))
+pembrocisipdcomb
+
+summary(  survfit(Surv(as.numeric(  survtime),  event == "1"
+) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+  pembrocisipdsurvcom
+),times = landmark_times, conf.int = TRUE)
+```
+
+
+# Nadofarogene: CS-003
+For this analysis we used the most recent longterm follow-up data, not the prior 2021 Boorjian publication:
+Narayan, Journal of Urology, 2024 
+https://www.auajournals.org/doi/full/10.1097/JU.0000000000004020
+"Efficacy of Intravesical Nadofaragene Firadenovec for Patients With Bacillus Calmette-Guérin–Unresponsive Nonmuscle-Invasive Bladder Cancer: 5-Year Follow-Up From a Phase 3 Trial"
+
+
+## Data from Swimmer Plot
+
+```{r}
+#Swimmers Plot
+#pull in the digitization of Figure 2c: https://www.auajournals.org/doi/full/10.1097/JU.0000000000004020
+#Using the most recent longterm follow-up data not the prior 2021 Boorjian publication
+#Narayan, Journal of Urology, 2024 
+#Efficacy of Intravesical Nadofaragene Firadenovec for Patients With Bacillus Calmette-Guérin–Unresponsive Nonmuscle-Invasive Bladder Cancer: 5-Year Follow-Up From a Phase 3 Trial
+nadocisswimmerscr <- read_excel("Nadofarogene/CIS- swimmer-nado digi.xlsx")
+
+
+#Below is a Re-creation of Figure 2a (Y- Rate of sustained complete response, X-Time from complete response from the above Journal of Urology publication as a sanity check
+#Subtracting CR time from Survival time gives Duration of Response 
+
+nadocisswimcr<- ggsurvplot(
+  survfit(Surv(as.numeric(  survtime-crtime),   event == "1"
+               # &survival$ADTHCAUS=="DISEASE PROGRESSION"
+  ) ~ 1,                      data = 
+    nadocisswimmerscr
+  )
+  ,conf.int = FALSE,title="CS-003 Fig 2a Re-creation from Swimmer Plot Data",
+  xlim = c(0, 52),   break.time.by = 3,  ,risk.table = TRUE  # every 3 months
+)
+
+nadocisswimcr
+```
+Unlike Keynote-057, we are able to obtain some information on early censoring among the non-CR patients for CS-003, we know 
+1 patient had early censoring confirmed on both KM curve tick and CONSORT diagram
+```{r}
+
+#Since the swimmers plot only includes CR patients, must create file for all non-responders, 48 patients 
+#One patient is explicitly stated to have discontinued prior to response assessment in CONSORT Figure 1 and figure 2a- this patient is included as an early censoring event before 3 mo cysto (event time = 2)
+#All other of the 48 non-responders (47 patients) are considers to have recurred at the first 3 month cystoscopy
+#First cysto timing came from a sample of the swimmers plots CR times (range 2.3-3.66)- could make them all 3 months- will not affect 12 month estimates
+
+set.seed(123)
+
+nocrcisnadosample <- data.frame(
+  crtime = c(sample(nadocisswimmerscr$crtime, size = 47, replace = TRUE),2),
+  status = c(rep(1, 47),0)
+)
+
+colnames(nocrcisnadosample) <- c("survtime","event")
+
+cr<-data.frame(nadocisswimmerscr$survtime,nadocisswimmerscr$event)
+colnames(cr) <- c("survtime","event")
+
+#combine complete responses with non-complete responses
+nadocisswimcomb <- rbind(cr, nocrcisnadosample)
+
+
+#Below is a Re-creation of Figure 2b from the  publication (Y-High-grade recurrence free survival. X-Time since first dose of nado,)
+# https://www.auajournals.org/doi/full/10.1097/JU.0000000000004020
+#Narayan, Journal of Urology, 2024 
+
+nadocisswimsurv<- ggsurvplot(
+  survfit(Surv(as.numeric(  survtime),   event == "1"
+  ) ~ 1,                     data = 
+    nadocisswimcomb
+  )
+  ,
+  xlim = c(0, 57),  conf.int = FALSE,   break.time.by = 3,  risk.table = TRUE  # every 3 months
+,title="CS-003 Fig 2b Re-creation from Swimmer Plot Data",legend = "none",
+)
+
+nadocisswimsurv
+
+## Fit KM
+sf_nado <- survfit(Surv(as.numeric(survtime), event == "1") ~ 1,                       
+                   conf.type="log-log",error="greenwood",
+                   data = nadocisswimcomb)
+
+## Landmark times
+landmark_times <- c(12, 24)
+s_landmarksnado <- summary(sf_nado, times = landmark_times, conf.int = TRUE)
+
+df_landmarknado <- data.frame(
+  time  = s_landmarksnado$time,
+  surv  = s_landmarksnado$surv,
+  lower = s_landmarksnado$lower,
+  upper = s_landmarksnado$upper
+)
+
+## Base plot
+nadocisswimsurv <- ggsurvplot(
+  sf_nado,
+  data = nadocisswimcomb,
+  xlim = c(0, 36),
+  break.time.by = 3,
+  risk.table.title = "",
+  risk.table.y.text = FALSE,
+  ylab="Event Free Survival",
+  palette = "black",
+  xlab="Months",
+  conf.int=TRUE,
+  risk.table = TRUE,
+  title = "CS-003: Nadofarogene",
+  legend = "none"
+)
+
+## Add reference lines
+nadocisswimsurv$plot <- nadocisswimsurv$plot +
+  geom_vline(xintercept = seq(3, 57, by = 3), 
+             linewidth = 0.3, color = "gray70") +
+  geom_vline(xintercept = 12, 
+             linewidth = 0.3, color = "red")+
+  geom_text(
+    data = data.frame(x = seq(0, 60, by = 3), y = 0.02),  # positions
+    aes(x = x, y = y, label = "*"),
+    inherit.aes = FALSE,
+    vjust = 1.5,       # push asterisk below x-axis tick
+    size = 7,          # adjust size
+    color = "black"
+  )
+
+## Add 12- and 24-mo landmarks
+nadocisswimsurv$plot <- nadocisswimsurv$plot +
+  geom_segment(data = df_landmarknado,
+               aes(x = time, y = 0, xend = time, yend = surv),
+               linetype = "dashed") +
+
+  geom_errorbar(data = df_landmarknado,
+                aes(x = time, ymin = lower, ymax = upper),
+                width = 0, color = "black") +
+  geom_text(data = df_landmarknado,
+            aes(x = time + 1,
+                y = surv + 0.07,
+                label = sprintf("%d-mo EFS: %.1f%% \n(95%% CI %.1f–%.1f)",
+                                time, 100*surv, 100*lower, 100*upper)),
+            hjust = 0)
+
+##   y-axis ticks
+nadocisswimsurv$plot <- nadocisswimsurv$plot +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2),labels = scales::percent_format(accuracy = 1))
+
+nadocisswimsurv$table <- nadocisswimsurv$table +scale_x_continuous(position = "top",breaks = seq(0, 36, by = 3),labels = NULL) +
+  labs(y = "At Risk",title = NULL,x=NULL)  
+nadocisswimsurv
+summary(sf_nado, times = landmark_times, conf.int = TRUE)
+
+```
+## Data from Kaplan-Meier Reconstruction: ReconstructKM
+
+```{r}
+#Next KM curves were reconstructed from published KM curves
+#For Nadofarogene- a published KM curve was available for all patients (CR and non-CR)
+#using Figure 2b 
+# https://www.auajournals.org/doi/full/10.1097/JU.0000000000004020
+#Narayan, Journal of Urology, 2024 
+
+
+
+#First ReconstructKM-
+#https://cran.r-project.org/web/packages/reconstructKM/vignettes/introduction.html
+#KM curves were initially digitized using plotdigitizer 
+#https://plotdigitizer.com/
+  nadocis_surv<-read_excel("Nadofarogene/CIS- KM-nado digi.xlsx")
+  nadocis_NAR <- data.frame(time=seq(from=0, to=57, by=3), NAR=c(
+    103,75,51,39,31,26,24,23,18,15,15,15,15,13,12,12,10,10,8,5
+  ))
+  
+  nadocis_aug<-format_raw_tabs(raw_NAR=nadocis_NAR,
+                                 raw_surv=nadocis_surv)
+  
+  nadocis_aug$aug_surv <- nadocis_aug$aug_surv %>%
+    dplyr::rename(surv = survival)
+  
+  nadocis_recon <- KM_reconstruct(aug_NAR=nadocis_aug$aug_NAR, aug_surv=nadocis_aug$aug_surv)
+  nadocisreconsurv<-data.frame(nadocis_recon$IPD_time,nadocis_recon$IPD_event)
+  
+ nadorecon<- survfit(Surv(as.numeric(  nadocisreconsurv$nadocis_recon.IPD_time),   nadocisreconsurv$nadocis_recon.IPD_event == "1"
+  ) ~ 1,  conf.type="log-log",error="greenwood", data = nadocisreconsurv)
+  
+  nadocisrecon<-ggsurvplot(nadorecon
+,
+    xlim = c(0, 36),   break.time.by = 3,  ,risk.table = TRUE, 
+title = "CS-003 CIS+ EFS from ReconstructKM"
+        )
+  
+  nadocisrecon$plot<-nadocisrecon$plot+
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2))
+  nadocisrecon
+
+  summary(nadorecon, times = landmark_times, conf.int = TRUE)
+  
+```
+
+## Data from Kaplan-Meier Reconstruction: IPDfromKM
+
+```{r}
+ #Second IPDfromKM https://biostatistics.mdanderson.org/shinyapps/IPDfromKM/
+  nadocisipdsurv <- read_excel("Nadofarogene/CIS Nado IPDfromKM Reconstruct.xlsx")
+
+ nadoipd<- survfit(Surv(as.numeric(nadocisipdsurv$`Survival time`), nadocisipdsurv$Status == "1"
+  ) ~ 1, conf.type="log-log",error="greenwood", data = nadocisipdsurv)
+  
+  nadocisipd<-ggsurvplot(nadoipd
+    ,
+    xlim = c(0, 36),   break.time.by = 3,  ,risk.table = TRUE,  # every 3 months
+    title = "CS-003 CIS+ EFS from IPDfromKM"
+  )
+  
+  nadocisipd
+  
+  summary(nadoipd, times = landmark_times, conf.int = TRUE)
+```
+
+
+#N-803: QUILT-3.032
+
+Chamie, NEJM Evidence, 2023 https://evidence.nejm.org/doi/10.1056/EVIDoa2200167?url_ver=Z39.88-2003&rfr_id=ori:rid:crossref.org&rfr_dat=cr_pub%20%200pubmed
+"IL-15 Superagonist NAI in BCG-Unresponsive Non-Muscle-Invasive Bladder Cancer"
+
+N-803 remains unique for allowing reinduction, though BOND-3 is allowing this as well, these were patients who were found to have HG Ta or CIS on first cystoscopy, and were effectively given a second chance on therapy, although clinically practical, these would be considered events in other trials. To account for this, in our swimmers plot analysis we pulled out re-induction patients (details below) which were readily identifiable. We then reported these patients as events (at first cystoscopy) and in parallel reported them allowing re-induction per protocol. Identifying these patients was not readily possible in KM reconstruction so only per-protocol reinduction was evaluated in KM reconstructed analysis
+
+
+## Data from Swimmer Plot Digitization
+
+```{r}
+#
+
+#Swimmers Plot
+
+##pull in the digitization of Figure 1a: https://evidence.nejm.org/doi/10.1056/EVIDoa2200167?url_ver=Z39.88-2003&rfr_id=ori:rid:crossref.org&rfr_dat=cr_pub%20%200pubmed
+
+ n803cisswimmers <- read_excel("N803/CIS- swimmers-N803 digi.xlsx")
+ 
+ 
+ #below is used to recreate swimmers plot with duration of response
+ #
+ n803cisswimmers$timesincecr<-n803cisswimmers$survtime - n803cisswimmers$crtime
+
+ #this mimics the plot in the figure 1b as a sanity check
+ #https://evidence.nejm.org/doi/10.1056/EVIDoa2200167?url_ver=Z39.88-2003&rfr_id=ori:rid:crossref.org&rfr_dat=cr_pub%20%200pubmed
+ 
+ n803cisswimsincecr<- ggsurvplot(
+   survfit(Surv(as.numeric(  timesincecr),   event == "1"
+   ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+     n803cisswimmers
+   )
+   ,title="QUILT-3.032 Fig 1b Re-creation from Swimmer Plot Data",
+   xlim = c(0, 30),   break.time.by = 3,  ,risk.table = TRUE  # every 3 months
+   
+ )
+
+ n803cisswimsincecr
+
+ 
+ #13 patients achieved CR after reinduction
+ #these 13 patients experienced CR times at a 6 months cystoscopy, not at 3 month cystoscopy
+ #these patients are readily identifiable in the swimmers plot by their CR times around 6 months 
+ #by identifying those 13 patients with CR >4 months, we can pull them from complete responders and assume they recur at 3 month cysto
+ 
+ 
+ n803cisswimmersnoreinduce<-subset(n803cisswimmers,n803cisswimmers$crtime<=4)
+ 
+#first create a cohort where reinduction is allowed per protocol  
+ #add 24 non-responders assuming recurrence was observed at first cystoscopy
+ #first cystoscopy taken as sample of 3 mo CR times (range 2.1-3.5)
+ set.seed(123)
+ nocrcisn803sample <- data.frame(
+   crtime = sample(n803cisswimmersnoreinduce$crtime, size = 24, replace = TRUE),
+   status = rep(1, 24)
+ )
+
+
+ colnames(nocrcisn803sample) <- c("survtime","event")
+ 
+ cr<-data.frame(n803cisswimmers$survtime,n803cisswimmers$event)
+ colnames(cr) <- c("survtime","event")
+ # now rbind should work
+ #combine complete responses with non-complete responses
+n803cisswimcomb <- rbind(cr, nocrcisn803sample)
+n803cisswimcomb$type<-"allowing reinduction"
+
+
+#now create survival time where for the 13 patients with reinduction experienced an event at first cystoscopy
+#first cystoscopy taken as sample of 3 mo CR times (range 2.1-3.5)
+n803cisswimmers$cleansurvtime<-ifelse(n803cisswimmers$crtime>4,
+                                      sample(n803cisswimmersnoreinduce$crtime, size = 1, replace = TRUE),n803cisswimmers$survtime
+)
+n803cisswimmers$cleansurvevent<-ifelse(n803cisswimmers$crtime>4,
+                                     1,n803cisswimmers$event)
+
+crnoreinduce<-data.frame(n803cisswimmers$cleansurvtime,n803cisswimmers$cleansurvevent)
+colnames(crnoreinduce) <- c("survtime","event")
+ 
+n803cisswimcombnoreinduce <- rbind(crnoreinduce, nocrcisn803sample)
+n803cisswimcombnoreinduce$type<-"reinduction as an event"
+#full cohort with each patient twice including both no reinduction (treating as an event) or per protocol reinduction
+n803cisswimcombf<-rbind(n803cisswimcombnoreinduce,n803cisswimcomb)
+
+sf_n803comb <- survfit(Surv(as.numeric(  survtime),   event == "1"
+                          
+) ~ type, conf.type="log-log",error="greenwood",data = 
+  n803cisswimcombf
+)
+
+## Landmark times
+landmark_times <- c(12, 24)
+s_landmarksn803comb <- summary(sf_n803comb, times = landmark_times, conf.int = TRUE)
+
+
+df_landmarkn803comb <- data.frame(
+  time  = s_landmarksn803comb$time,
+  surv  = s_landmarksn803comb$surv,
+  lower = s_landmarksn803comb$lower,
+  upper = s_landmarksn803comb$upper
+)
+
+n803cisswimsurvcomb <- ggsurvplot(
+  sf_n803comb,
+  data = n803cisswimcombf,
+  conf.int = TRUE,
+  xlim = c(0, 36),
+  ylab="Event Free Survival",
+   palette = c("#ADD8E6","gray30"),
+  risk.table.title = "",
+  risk.table.y.text = FALSE,
+  break.time.by = 3,
+  risk.table = TRUE,
+  xlab="Months",
+  # title = "QUILT-3.032: N-803\nCIS+ Population",
+  
+  title = "QUILT-3.032: N-803",
+
+legend.labs = c("Allowing Per Protocol Reinduction", "Reinduction Considered an Event"), 
+legend.title = "Reinduction Treatment"                  )
+
+
+n803cisswimsurvcomb$plot <- n803cisswimsurvcomb$plot +
+  scale_fill_manual(
+    values = c("#ADD8E6", "gray70")  # one value per stratum
+  )
+
+n803cisswimsurvcomb$plot <- n803cisswimsurvcomb$plot +
+  theme(
+    legend.position = c(0.75, 0.95),       # inside top-right
+    legend.justification = c("right", "top"),
+    legend.background = element_rect(fill = "white", color = NA)
+  )
+
+
+
+## Add your existing vertical reference lines
+n803cisswimsurvcomb$plot <- n803cisswimsurvcomb$plot +
+  geom_vline(xintercept = seq(6, 57, by = 3), 
+             linewidth = 0.3, color = "gray60") +
+  geom_vline(xintercept = c(12*12/52.179), 
+             linewidth = 0.3, color = "red")+
+  geom_text(
+    data = data.frame(x = c(seq(0, 5/(365/12/7), by = 1/(365/12/7))
+                            ,seq(0, 2/(365/12/7), by = 1/(365/12/7))+c(4)
+                            ,seq(0, 2/(365/12/7), by = 1/(365/12/7))+c(7)
+                            ,seq(0, 2/(365/12/7), by = 1/(365/12/7))+c(10)
+                            ,seq(0, 2/(365/12/7), by = 1/(365/12/7))+c(13)
+                            ,seq(0, 2/(365/12/7), by = 1/(365/12/7))+c(19)
+                            ,seq(0, 2/(365/12/7), by = 1/(365/12/7))+c(25)
+                            ,seq(0, 2/(365/12/7), by = 1/(365/12/7))+c(31)
+                            ,seq(0, 2/(365/12/7), by = 1/(365/12/7))+c(37)
+                            
+                            
+                            
+                            )
+                      
+                      
+                      , y = 0.02),  # positions
+    aes(x = x, y = y, label = "*"),
+    inherit.aes = FALSE,
+    vjust = 1.5,       # push asterisk below x-axis tick
+    size = 7,          # adjust size
+    color = "black"
+  )
+
+## Fit KM for N-803, reinduction as event only
+sf_n803 <- survfit(Surv(as.numeric(survtime), event == "1") ~ 1,                       
+                   conf.type="log-log",error="greenwood",
+                   data = n803cisswimcombnoreinduce)
+
+## Landmark times
+landmark_times <- c(12, 24)
+s_landmarksn803 <- summary(sf_n803, times = landmark_times, conf.int = TRUE)
+
+
+
+df_landmarkn803 <- data.frame(
+  time  = s_landmarksn803$time,
+  surv  = s_landmarksn803$surv,
+  lower = s_landmarksn803$lower,
+  upper = s_landmarksn803$upper
+)
+
+## Add dashed crosshairs + vertical CI error bars for 12 & 24 mo
+n803cisswimsurvcomb$plot <- n803cisswimsurvcomb$plot +
+  geom_segment(data = df_landmarkn803,
+               aes(x = time, y = 0, xend = time, yend = surv),
+               linetype = "dashed") +
+  # geom_segment(data = df_landmarkn803,
+  #              aes(x = 0, y = surv, xend = time, yend = surv),
+  #              linetype = "dashed") +
+  geom_errorbar(data = df_landmarkn803,
+                aes(x = time, ymin = lower, ymax = upper),
+                width = 0, color = "black") +
+  geom_text(data = df_landmarkn803,
+            aes(x = time + 1,
+                y = surv + 0.07,
+                label = sprintf("%d-mo EFS: %.1f%% \n(95%% CI %.1f–%.1f)",
+                                time, 100*surv, 100*lower, 100*upper)),
+            hjust = 0)+
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2),labels = scales::percent_format(accuracy = 1))
+
+n803cisswimsurv <- ggsurvplot(
+  sf_n803,
+  data = n803cisswimcombnoreinduce,
+  conf.int = TRUE,
+  xlim = c(0, 36),
+    ylab="Event Free Survival",
+  palette = "black",
+    risk.table.title = "",
+  risk.table.y.text = FALSE,
+  break.time.by = 3,
+  risk.table = TRUE,
+  xlab="Months",
+  title = "QUILT-3.032: N-803 (*Reinduction considered event)\nCIS+ Population",
+  legend = "none"
+)
+
+n803cisswimsurvcomb$table <- n803cisswimsurv$table +scale_x_continuous(position = "top",breaks = seq(0, 36, by = 3),labels = NULL) +  labs(y = "At Risk",x=NULL)  +
+  theme(plot.title = element_text(
+    size = 1))
+
+n803cisswimsurvcomb
+
+
+s_landmarksn803comb
+
+```
+
+## Data from Kaplan-Meier Reconstruction: ReconstructKM
+
+```{r}
+#Next KM curves were reconstructed from published KM curves
+#For N803- a published KM curve was available for only CR patients starting at time of response so needed to be adjusted for T0 = therapy start
+#using Figure 1b
+#Chamie, NEJM Evidence, 2023 https://evidence.nejm.org/doi/10.1056/EVIDoa2200167?url_ver=Z39.88-2003&rfr_id=ori:rid:crossref.org&rfr_dat=cr_pub%20%200pubmed
+#IL-15 Superagonist NAI in BCG-Unresponsive Non-Muscle-Invasive Bladder Cancer 
+
+#in contrast to swimmers plots we do not know which patients experienced reinduction from KM alone so reinduction was allowed
+
+#First ReconstructKM-
+#https://cran.r-project.org/web/packages/reconstructKM/vignettes/introduction.html
+#KM curves were initially digitized using plotdigitizer 
+#https://plotdigitizer.com/
+
+
+n803_surv<-read_excel("N803/CIS- KM-N803 digi.xlsx")
+#number at risk
+n803_NAR <- data.frame(time=seq(from=0, to=30, by=3), NAR=c(
+  58,55,44,34,28,24,20,16,5,2,0
+))
+
+n803cis_aug<-format_raw_tabs(raw_NAR=n803_NAR,
+                               raw_surv=n803_surv)
+
+n803cis_aug$aug_surv <- n803cis_aug$aug_surv %>%
+  dplyr::rename(surv = survival)
+
+n803cis_recon <- KM_reconstruct(aug_NAR=n803cis_aug$aug_NAR, aug_surv=n803cis_aug$aug_surv)
+
+n803cisreconsurv<-data.frame(n803cis_recon$IPD_time,n803cis_recon$IPD_event)
+
+#a reconstruction of Figure 1b for sanity check
+n803cisreconcr<-ggsurvplot(
+  survfit(Surv(as.numeric(  n803cis_recon.IPD_time),   n803cis_recon.IPD_event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    n803cisreconsurv
+  ),
+  xlim = c(0, 30)
+   ,title="QUILT-3.032 Fig 1b Re-creation from ReconstructKM",
+  break.time.by = 3,risk.table = TRUE)
+n803cisreconcr
+```
+Below is a sanity check to confirm our 12 mo durability aligns with what was in publication
+```{r}
+#sanity check for the CR rates at 12 mo given in figure 1b- but this is time from complete response
+#61.6 (47.3-73.1) is given in publication, this is within .2%, below gives 61.8 (47.5-73.2)
+summary(  survfit(Surv(as.numeric(  n803cis_recon.IPD_time),   n803cis_recon.IPD_event == "1"
+) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+  n803cisreconsurv
+),times = 12, conf.int = TRUE)
+
+#a 3 month cysto period must be added to duration of response (which is really time since first cysto) to be consistent with time since therapy start
+#3 month cysto timing was taken as a sample of the swimmers plot CR times (range 2.1-3.5)
+set.seed(123)
+n803cisreconsurv$survtime<-n803cisreconsurv$n803cis_recon.IPD_time+sample(n803cisswimmersnoreinduce$crtime, size = 58, replace = TRUE)
+
+#Since the KM plot only includes CR patients, must create file for non-responders, 24 patients, same as for swimmers
+#First cysto timing came from a sample of the swimmers plots CR times (range 2.1-3.5)
+
+set.seed(123)
+nocrcisn803sample <- data.frame(
+  crtime = sample(n803cisswimmersnoreinduce$crtime, size = 24, replace = TRUE),
+  status = rep(1, 24)
+)
+
+colnames(nocrcisn803sample) <- c("survtime","event")
+
+cr<-data.frame(n803cisreconsurv$survtime,n803cisreconsurv$n803cis_recon.IPD_event)
+colnames(cr) <- c("survtime","event")
+# now rbind should work with similar colnames
+#combine complete responses with non-complete responses
+n803cisreconsurvcom <- rbind(cr, nocrcisn803sample)
+
+
+
+n803cisreconcomb<-ggsurvplot(
+  survfit(Surv(as.numeric(  survtime),  event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    n803cisreconsurvcom
+  ),    title = "QUILT-3.032 CIS+ EFS from ReconstructKM",conf.int = F,
+  xlim = c(0, 36))
+n803cisreconcomb
+
+summary(  survfit(Surv(as.numeric(  survtime),  event == "1"
+) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+  n803cisreconsurvcom
+),times = landmark_times, conf.int = TRUE)
+```
+
+## Data from Kaplan-Meier Reconstruction: IPDfromKM
+
+```{r}
+#Second IPDfromKM https://biostatistics.mdanderson.org/shinyapps/IPDfromKM/
+#IPDfromKM
+#IPDfromKM
+#IPDfromKM
+
+n803cisipdsurv <- read_csv("N803/CIS N803 IPDfromKM Reconstruct.csv")
+
+#Again a reconstruction of Figure 2b for sanity check
+
+n803ciscripd<-ggsurvplot(
+  survfit(Surv(as.numeric(n803cisipdsurv$`Survival time`), n803cisipdsurv$Status == "1"
+               # &survival$ADTHCAUS=="DISEASE PROGRESSION"
+  ) ~ 1,                       conf.type="log-log",error="greenwood"
+  , data = n803cisipdsurv)
+  ,title = "QUILT-3.032 Fig 1b Re-creation from IPDfromKM",conf.int = F,
+  xlim = c(0, 42),   break.time.by = 3 ,risk.table = TRUE  # every 3 months
+  
+)
+n803ciscripd
+
+
+#a 3 month cysto period must be added to duration of response (which is really time since first cysto) to be consistent with time since therapy start
+#3 month cysto timing was taken as a sample of the swimmers plot CR times (range 2.4-4.5)
+set.seed(123)
+#survival time pulled in is from CR/first-cysto, survtime created is from therapy start
+n803cisipdsurv$survtime<-n803cisipdsurv$`Survival time`+sample(n803cisswimmersnoreinduce$crtime, size = 58, replace = TRUE)
+
+#Since the KM plot only includes CR patients, must create file for non-responders, 24 patients, same as for swimmers
+#First cysto timing came from a sample of the swimmers plots CR times (range 2.1-3.5)
+
+set.seed(123)
+nocrcisn803sample <- data.frame(
+  crtime = sample(n803cisswimmersnoreinduce$crtime, size = 24, replace = TRUE),
+  status = rep(1, 24)
+)
+
+colnames(nocrcisn803sample) <- c("survtime","event")
+
+cr<-data.frame(n803cisipdsurv$survtime,n803cisipdsurv$Status)
+colnames(cr) <- c("survtime","event")
+# now rbind should work with similar colnames
+#combine complete responses with non-complete responses
+n803cisipdsurvcom <- rbind(cr, nocrcisn803sample)
+
+n803cisipdcomb<-ggsurvplot(
+  survfit(Surv(as.numeric(survtime),  event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    n803cisipdsurvcom
+  ),title = "QUILT-3.032 CIS+ EFS from IPDfromKM",
+  xlim = c(0, 36))
+n803cisipdcomb
+
+summary(  survfit(Surv(as.numeric(  survtime),  event == "1"
+) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+  n803cisipdsurvcom,
+),times = landmark_times, conf.int = TRUE)
+
+```
+
+
+#TAR-200: SunRISe-1
+Daneshmand, JCO, 2025 https://evidence.nejm.org/doi/10.1056/EVIDoa2200167?url_ver=Z39.88-2003&rfr_id=ori:rid:crossref.org&rfr_dat=cr_pub%20%200pubmed
+"TAR-200 for Bacillus Calmette-Guérin–Unresponsive High-Risk Non–Muscle-Invasive Bladder Cancer: Results From the Phase IIb SunRISe-1 Study"
+
+Estimates from SunRISe-1 are likely particularly accurate as swimmer plot data are available for all patients
+
+
+## Data from Swimmer Plot Digitization
+
+```{r}
+#Swimmers Plot
+
+#initial swimmers plot published for figure was for all patients- Figure 2a
+tar200cisswimmers <- read_excel("TAR200/CIS- swimmers-TAR200 digi.xlsx")
+
+
+#as sanity check recreate figure 2b using DOR table (right side of Figure 2a) 
+tar200cisswimsincecrtable<- ggsurvplot(
+  survfit(Surv(as.numeric(  dor),   event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    tar200cisswimmers
+  )
+  ,title = "Sunrise-1 Re-creation of Figure 2b- from DOR List",conf.int = F,
+  xlim = c(0, 24),   break.time.by = 3,  ,risk.table = TRUE  # every 3 months
+  
+)
+tar200cisswimsincecrtable
+#Also recreate figure 2b as  time from CR from swimmers plot
+
+tar200cisswimsincecr<- ggsurvplot(
+  survfit(Surv(as.numeric(  survtime-crtime),   event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    tar200cisswimmers
+  )
+  ,title = "Sunrise-1 Re-creation of Figure 2b- from Swimmers Plot",conf.int = F,
+  xlim = c(0, 24),   break.time.by = 3,  ,risk.table = TRUE  # every 3 months
+  
+)
+tar200cisswimsincecr
+
+## Fit KM
+sf_tar200 <- survfit(Surv(as.numeric(survtime), event == "1") ~ 1, 
+                     conf.type="log-log",error="greenwood",   
+                     data = tar200cisswimmers)
+
+## Landmark times
+landmark_times <- c(12, 24)
+s_landmarkstar <- summary(sf_tar200, times = landmark_times, conf.int = TRUE)
+
+
+
+df_landmarktar <- data.frame(
+  time  = s_landmarkstar$time,
+  surv  = s_landmarkstar$surv,
+  lower = s_landmarkstar$lower,
+  upper = s_landmarkstar$upper
+)
+
+## Base plot with CI ribbon
+tar200cisswimsurv <- ggsurvplot(
+  sf_tar200,
+  data = tar200cisswimmers,
+  conf.int = TRUE,
+  xlim = c(0, 36),
+  xlab="Months",
+  ylab="Event Free Survival",
+  palette = "black",
+  break.time.by = 3,
+  risk.table.title = "",
+   risk.table.y.text = FALSE,
+  risk.table = TRUE,
+  title = "SunRISe-1: TAR-200",
+  # title = "SunRISe-1: TAR-200\nCIS+ Population",
+  legend = "none"
+)
+
+## Add your existing vertical reference lines
+tar200cisswimsurv$plot <- tar200cisswimsurv$plot +
+  geom_vline(xintercept = seq(12*12/52.179, 57, by = 12*12/52.179), 
+             linewidth = 0.3, color = "gray50") +
+  geom_vline(xintercept = c(24*12/52.179, 48*12/52.179), 
+             linewidth = 0.3, color = "red")+
+  geom_text(
+    data = data.frame(x = c(seq(0, 24/(365/12/7), by = 3/(365/12/7))
+                            ,seq(24/(365/12/7), 24, by = 12/(365/12/7))
+                            
+                            
+                            
+                            
+    )
+    
+    
+    , y = 0.02),  # positions
+    aes(x = x, y = y, label = "*"),
+    inherit.aes = FALSE,
+    vjust = 1.5,       # push asterisk below x-axis tick
+    size = 7,          # adjust size
+    color = "black"
+  )
+
+
+## Add dashed crosshairs + vertical CI error bars for 12 & 24 mo
+tar200cisswimsurv$plot <- tar200cisswimsurv$plot +
+  geom_segment(data = df_landmarktar,
+               aes(x = time, y = 0, xend = time, yend = surv),
+               linetype = "dashed") +
+
+  geom_errorbar(data = df_landmarktar,
+                aes(x = time, ymin = lower, ymax = upper),
+                width = 0, color = "black") +
+  geom_text(data = df_landmarktar,
+            aes(x = time + 1,
+                y = surv+.07,
+                label = sprintf("%d-mo EFS: %.1f%% \n(95%% CI %.1f–%.1f)",
+                                time, 100*surv, 100*lower, 100*upper)),
+            hjust = 0)+
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2),labels = scales::percent_format(accuracy = 1))
+
+tar200cisswimsurv$table <- tar200cisswimsurv$table +scale_x_continuous(position = "top",breaks = seq(0, 36, by = 3),labels = NULL) +  
+  labs(y = "At Risk",title = NULL,x=NULL) +
+  theme(plot.title = element_text(
+    size = 0))
+
+tar200cisswimsurv
+s_landmarkstar
+```
+
+## Data from Kaplan-Meier Reconstruction: ReconstructKM
+
+```{r}
+#First ReconstructKM-
+#https://cran.r-project.org/web/packages/reconstructKM/vignettes/introduction.html
+#KM curves were initially digitized using plotdigitizer 
+#https://plotdigitizer.com/
+
+
+tar200_surv<-read_excel("TAR200/CIS- KM-TAR200 digi.xlsx")
+#number at risk
+tar200_NAR <- data.frame(time=seq(from=0, to=24, by=3), NAR=c(
+  70,54,49,40,37,23,15,11,11
+))
+
+tar200cis_aug<-format_raw_tabs(raw_NAR=tar200_NAR,
+                             raw_surv=tar200_surv)
+
+tar200cis_aug$aug_surv <- tar200cis_aug$aug_surv %>%
+  dplyr::rename(surv = survival)
+
+tar200cis_recon <- KM_reconstruct(aug_NAR=tar200cis_aug$aug_NAR, aug_surv=tar200cis_aug$aug_surv)
+
+tar200cisreconsurv<-data.frame(tar200cis_recon$IPD_time,tar200cis_recon$IPD_event)
+
+#a reconstruction of Figure 1b for sanity check
+tar200cisreconcr<-ggsurvplot(
+  survfit(Surv(as.numeric(  tar200cis_recon.IPD_time),   tar200cis_recon.IPD_event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    tar200cisreconsurv
+  ),title = "Sunrise-1 Re-creation of Figure 2b- from ReconstructKM",conf.int = F,
+  xlim = c(0, 24),
+  break.time.by = 3,risk.table = TRUE)
+tar200cisreconcr
+
+
+#a 3 month cysto period must be added to duration of response (which is really time since first cysto) to be consistent with time since therapy start
+#3 month cysto timing was taken as a sample of the swimmers plot CR times (range 2.1-3.5)
+set.seed(123)
+tar200cisreconsurv$survtime<-tar200cisreconsurv$tar200cis_recon.IPD_time+sample(na.omit(tar200cisswimmers$crtime), size = 70, replace = TRUE)
+
+#Since the KM plot only includes CR patients, must create file for non-responders, 15 patients, same as for swimmers
+#First cysto timing came from a sample of the swimmers plots CR times (range 2.9-8.4)
+#based on swimmers plot we know that 4 patients were censored before first cystoscopy
+#so 70 achieved CR, 11 had recurrence on first cystoscopy and 4 had early censor (2 months arbitrarily selected)
+set.seed(123)
+nocrcistar200sample <- data.frame(
+  crtime = c(sample(na.omit(tar200cisswimmers$crtime), size = 11, replace = TRUE),rep(2,4)),
+  status = c(rep(1, 11),rep(0,4))
+)
+
+colnames(nocrcistar200sample) <- c("survtime","event")
+
+cr<-data.frame(tar200cisreconsurv$survtime,tar200cisreconsurv$tar200cis_recon.IPD_event)
+colnames(cr) <- c("survtime","event")
+# now rbind should work with similar colnames
+#combine complete responses with non-complete responses
+tar200cisreconsurvcom <- rbind(cr, nocrcistar200sample)
+
+
+
+tar200cisreconcomb<-ggsurvplot(
+  survfit(Surv(as.numeric(  survtime),  event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    tar200cisreconsurvcom
+  ),
+  xlim = c(0, 36))
+tar200cisreconcomb
+
+summary(  survfit(Surv(as.numeric(  survtime),  event == "1"
+) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+  tar200cisreconsurvcom
+),times = landmark_times, conf.int = TRUE)
+```
+
+## Data from Kaplan-Meier Reconstruction: IPDfromKM
+
+```{r}
+#Second IPDfromKM https://biostatistics.mdanderson.org/shinyapps/IPDfromKM/
+#IPDfromKM
+#IPDfromKM
+#IPDfromKM
+
+tar200cisipdsurv <- read_csv("TAR200/CIS TAR-200 IPDfromKM Reconstruct.csv")
+
+#Again a reconstruction of Figure 2a for sanity check
+
+tar200ciscripd<-ggsurvplot(
+  survfit(Surv(as.numeric(tar200cisipdsurv$`Survival time`), tar200cisipdsurv$Status == "1"
+               # &survival$ADTHCAUS=="DISEASE PROGRESSION"
+  ) ~ 1,                       conf.type="log-log",error="greenwood"
+  , data = tar200cisipdsurv)
+  ,title = "Sunrise-1 Re-creation of Figure 2b- from IPDfromKM",conf.int = F,
+  xlim = c(0, 24),   break.time.by = 3,  ,risk.table = TRUE  # every 3 months
+  
+)
+tar200ciscripd
+
+
+
+set.seed(123)
+#survival time pulled in is from CR/first-cysto, survtime created is from therapy start
+tar200cisipdsurv$survtime<-tar200cisipdsurv$`Survival time`+sample(na.omit(tar200cisswimmers$crtime), size = 70, replace = TRUE)
+
+#Again Since the KM plot only includes CR patients, must create file for non-responders, 15 patients, same as for swimmers
+#First cysto timing came from a sample of the swimmers plots CR times (range 2.9-8.4)
+#based on swimmers plot we know that 4 patients were censored before first cystoscopy
+#so 70 achieved CR, 11 had recurrence on first cystoscopy and 4 had early censor (2 months arbitrarily selected)
+#Since the KM plot only includes CR patients, must create file for non-responders, 15 patients, same as for swimmers
+#First cysto timing came from a sample of the swimmers plots CR times (range 2.9-8.4)
+
+set.seed(123)
+nocrcistar200sample <- data.frame(
+  crtime = c(sample(na.omit(tar200cisswimmers$crtime), size = 11, replace = TRUE),rep(2,4)),
+  status = c(rep(1, 11),rep(0,4))
+)
+
+colnames(nocrcistar200sample) <- c("survtime","event")
+
+
+colnames(nocrcistar200sample) <- c("survtime","event")
+
+cr<-data.frame(tar200cisipdsurv$survtime,tar200cisipdsurv$Status)
+colnames(cr) <- c("survtime","event")
+# now rbind should work with similar colnames
+#combine complete responses with non-complete responses
+tar200cisipdsurvcom <- rbind(cr, nocrcistar200sample)
+
+tar200cisipdcomb<-ggsurvplot(
+  survfit(Surv(as.numeric(survtime),  event == "1"
+  ) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+    tar200cisipdsurvcom
+  ),
+  xlim = c(0, 36))
+tar200cisipdcomb
+
+summary(  survfit(Surv(as.numeric(  survtime),  event == "1"
+) ~ 1,                       conf.type="log-log",error="greenwood", data = 
+  tar200cisipdsurvcom
+),times = landmark_times, conf.int = TRUE)
+```
+
+###Bring together Swimmers Plot Reconstucted EFS as Grid
+
+```{r fig.width=12, fig.height=12, out.width="90%", fig.align="center"}
+## Example: shrink margins for each risk table
+pembrocisswimsurv$table <- pembrocisswimsurv$table +
+  theme(plot.margin = margin(-10, 5, 0, 5))   # top margin negative pulls table up
+
+nadocisswimsurv$table <- nadocisswimsurv$table +
+  theme(plot.margin = margin(-10, 5, 0, 5))
+
+n803cisswimsurvcomb$table <- n803cisswimsurvcomb$table +
+  theme(plot.margin = margin(-10, 5, 0, 5))
+
+tar200cisswimsurv$table <- tar200cisswimsurv$table +
+  theme(plot.margin = margin(-10, 5, 0, 5))
+
+
+combined_grid <- plot_grid(
+
+
+  pembrocisswimsurv$plot,
+  nadocisswimsurv$plot,
+  
+  pembrocisswimsurv$table,
+  nadocisswimsurv$table,
+  
+  n803cisswimsurvcomb$plot,
+  tar200cisswimsurv$plot,
+  n803cisswimsurvcomb$table,
+  
+  tar200cisswimsurv$table,
+ 
+ # optional panel labels
+  ncol = 2, nrow = 4,
+  align = "v",
+ rel_heights = c(5, 1, 5, 1)
+)
+
+
+## Legend grob: horizontal line + label
+legend_plot <- ggplot() +
+  # Gray40 line for cystoscopy/cytology
+  geom_segment(aes(x = 0.3, xend = .3, y = 0, yend = 1),
+               color = "gray50", linewidth = 0.5) +
+  annotate("text", x = 0.05, y = .5, label = "Cystoscopy/Cytology:", hjust = 0, size = 3.5) +
+  # Red line for mandated biopsy
+  geom_segment(aes(x = .6, xend = .6, y = 0, yend = 1),
+               color = "red", linewidth = 0.4) +
+  annotate("text", x = .05, y = 1, label = "bold(underline('Legend'))",  hjust = 0, size = 4, 
+           parse = TRUE) +
+  xlim(0, 2) + ylim(-0.5, 1.5) +
+  annotate("text", x = .4, y = .5, label = "Mandated Biopsy:", hjust = 0, size = 3.5) +
+  xlim(0, 2) + ylim(-0.5, 1.5) +
+  annotate("text", x = .7, y = .5, label = "Administration of Treatment", hjust = 0, size = 3.5) +
+  xlim(0, 2) + ylim(-0.5, 1.5) +
+  annotate("text", x = 1, y = .3, label = "*", hjust = 0, size = 9.5) +
+  xlim(0, 2) + ylim(-0.5, 1.5) +
+  theme_void() 
+
+
+## Stack combined grid + legend
+final_plot <- plot_grid(
+  combined_grid,
+  legend_plot,
+  ncol = 1,
+  rel_heights = c(1, 0.1)   # adjust legend height
+)
+
+final_plot
+
+```
+
+## Supplementary Valrubicin Study Analysis
+
+Steinberg, J Urol, 2000
+https://pubmed.ncbi.nlm.nih.gov/10687972/
+
+
+CR and Event definitions were more stringent than in modern studies. CR required being disease free at both 3 & 6 mo eval, and an Event could also be low-grade cancer or even two positive cytologies without confirmed bladder cancer. 10 patients had recurrence with only low-grade disease. For this study, individual patient data was published in table form for the CR patient. Patients who did not have CR were mostly assumed to have experienced event at first cystoscopy (2/3) the remaining were expected to recur at second (1/3), this was chosen since most patients in modern studies recur early. The latter second cystoscopy recurrecne patients would be considered CR patients by moder definition.. 
+
+```{r}
+#valrubicin
+val_surv<-read_excel("Valrubicin/CIS- KM-val digi.xlsx")
+#Can pull this from Valrubicin Table 4 at risk to get exact
+
+valciscrtable <- read_excel("Valrubicin/CIS- KM table.xlsx")
+
+valciscrsurv<- ggsurvplot(
+  survfit(Surv(as.numeric(  survtime),   event == "1"
+               # &survival$ADTHCAUS=="DISEASE PROGRESSION"
+  ) ~ 1, data = 
+    valciscrtable, conf.type="log-log",error="greenwood",
+  
+  )
+  ,
+  xlim = c(0,36),   break.time.by = 3,  ,risk.table = TRUE  # every 3 months
+
+  ,title="Valrubicin Study: Reconstruction of Figure from Paper",legend = "none"
+)
+#exact plot from paper
+#
+
+
+valciscrsurv
+
+#1 patient withdrew consent bfore 3 months and there is another censor on the cystectomy survival curve so I added 2 censored patients
+# the remaining of the 71 (90-19) I said experienced an event
+
+
+nocrcisvalsample <- data.frame(
+  crtime = c( 2.7 + runif(46)^2  * (.6),
+              5.7 + runif(23)^2  * (.6),
+            1.2,2.1),
+  status =c(rep(1,69),rep(0,2))
+  
+)
+colnames(nocrcisvalsample) <- c("survtime","event")
+
+cr<-data.frame(valciscrtable$survtime,valciscrtable$event)
+colnames(cr) <- c("survtime","event")
+# now rbind should work
+#combine complete responses with non-complete responses
+valcisswimcomb <- rbind(cr, nocrcisvalsample)
+
+
+## Fit KM
+sf_val <- survfit(Surv(as.numeric(survtime), event == "1") ~ 1,
+                  conf.type="log-log",error="greenwood",data = valcisswimcomb)
+
+## Landmark times
+landmark_times <- c(12, 24)
+s_landmarksval <- summary(sf_val, times = landmark_times, conf.int = TRUE)
+
+df_landmarkval <- data.frame(
+  time  = s_landmarksval$time,
+  surv  = s_landmarksval$surv,
+  lower = s_landmarksval$lower,
+  upper = s_landmarksval$upper
+)
+
+## Base plot
+valcisswimsurv <- ggsurvplot(
+  sf_val,
+  data = valcisswimcomb,
+  conf.int = TRUE,
+  
+  ylab="Event Free Survival",
+  palette = "black",
+  risk.table.title = "",
+  risk.table.y.text = FALSE,
+  xlab="Months",
+  xlim = c(0, 36),
+  break.time.by = 3,
+  risk.table = TRUE,
+  title = "Valrubicin Study: Valrubicin",
+  legend = "none"
+)
+
+
+## Add vertical reference lines (every 3 mo)
+valcisswimsurv$plot <- valcisswimsurv$plot +
+  geom_vline(xintercept = seq(3, 57, by = 3), 
+             linewidth = 0.3, color = "red") +
+  geom_text(
+    data = data.frame(x = seq(0,  5/(365/12/7), by = 1/(365/12/7)), y = 0.02),  # positions
+    aes(x = x, y = y, label = "*"),
+    inherit.aes = FALSE,
+    vjust = 1.5,       # push asterisk below x-axis tick
+    size = 7,          # adjust size
+    color = "black"
+  )
+
+
+## Add dashed crosshairs + CI error bars + labels for 12 & 24 mo
+valcisswimsurv$plot <- valcisswimsurv$plot +
+  geom_segment(data = df_landmarkval,
+               aes(x = time, y = 0, xend = time, yend = surv),
+               linetype = "dashed") +
+  geom_segment(data = df_landmarkval,
+               aes(x = 0, y = surv, xend = time, yend = surv),
+               linetype = "dashed") +
+  geom_errorbar(data = df_landmarkval,
+                aes(x = time, ymin = lower, ymax = upper),
+                width = 0, color = "black") +
+  geom_text(data = df_landmarkval,
+            aes(x = time + 1,
+                y = surv + 0.07,
+                label = sprintf("%d-mo EFS: %.1f%% \n(95%% CI %.1f–%.1f)",
+                                time, 100*surv, 100*lower, 100*upper)),
+            hjust = 0)
+
+
+valcisswimsurv$plot <- valcisswimsurv$plot +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2))
+
+valcisswimsurv$table <- valcisswimsurv$table +scale_x_continuous(position = "top",breaks = seq(0, 36, by = 3),labels = NULL) +  
+  labs(y = "At Risk",title = NULL,,x=NULL)  +
+  theme(plot.title = element_text(
+    size = 1))
+valcisswimsurv
+
+s_landmarksval
+
+```
